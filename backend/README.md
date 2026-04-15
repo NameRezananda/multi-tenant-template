@@ -1,58 +1,269 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Multi-Tenant SaaS Backend — Laravel API
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Backend API untuk aplikasi SaaS multi-tenant berbasis Laravel 13 + Sanctum. Dirancang sebagai **headless API** yang bisa dikonsumsi oleh frontend apapun (React, Vue, Next.js, mobile, dll).
 
-## About Laravel
+---
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Tech Stack
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+- **Laravel 13** — PHP framework
+- **Laravel Sanctum** — Token-based API authentication
+- **SQLite** — Database default (mudah diganti ke MySQL/PostgreSQL)
+- **Single-database multi-tenancy** — Isolasi data via global scope + header
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+---
 
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+## Cara Menjalankan
 
 ```bash
-composer require laravel/boost --dev
+# Install dependencies
+composer install
 
-php artisan boost:install
+# Copy environment file
+cp .env.example .env
+
+# Generate app key
+php artisan key:generate
+
+# Jalankan migrasi + seeder
+php artisan migrate --seed
+
+# Jalankan server
+php artisan serve
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+Server berjalan di `http://localhost:8000`.
 
-## Contributing
+---
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## Struktur Database
 
-## Code of Conduct
+| Tabel | Deskripsi |
+|---|---|
+| `users` | Akun pengguna, memiliki flag `is_superadmin` |
+| `tenants` | Data organisasi/workspace (name, domain, is_active) |
+| `tenant_user` | Pivot: relasi user ↔ tenant dengan kolom `role` |
+| `products` | Contoh model yang di-scope per tenant |
+| `personal_access_tokens` | Token Sanctum |
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+---
 
-## Security Vulnerabilities
+## Sistem Multi-Tenancy
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+Proyek ini menggunakan **single-database multi-tenancy**. Setiap request ke endpoint tenant harus menyertakan header:
 
-## License
+```
+X-Tenant-Domain: nama-domain-tenant
+```
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+### Alur Kerja
+
+1. Middleware `CheckTenantHeader` membaca header `X-Tenant-Domain`
+2. Tenant dicari di database berdasarkan domain, harus aktif (`is_active = true`)
+3. Validasi bahwa user yang login memiliki akses ke tenant tersebut
+4. `TenantManager` service menyimpan konteks tenant untuk lifecycle request
+5. Model yang menggunakan trait `BelongsToTenant` otomatis di-filter berdasarkan tenant aktif
+
+### Menambahkan Model Baru yang Tenant-Scoped
+
+```php
+use App\Traits\BelongsToTenant;
+
+class YourModel extends Model
+{
+    use BelongsToTenant;
+}
+```
+
+Cukup tambahkan trait tersebut — query otomatis di-scope ke tenant aktif, dan `tenant_id` otomatis diisi saat create.
+
+---
+
+## API Endpoints
+
+Base URL: `http://localhost:8000/api`
+
+### Authentication
+
+| Method | Endpoint | Auth | Deskripsi |
+|---|---|---|---|
+| `POST` | `/login` | ❌ | Login, mengembalikan Bearer token |
+| `POST` | `/logout` | ✅ | Hapus token aktif |
+| `GET` | `/me` | ✅ | Data user yang sedang login (beserta tenants) |
+
+**Request Login:**
+```json
+{
+  "email": "admin@example.com",
+  "password": "password"
+}
+```
+
+**Response Login:**
+```json
+{
+  "message": "Login berhasil",
+  "access_token": "1|abc123...",
+  "token_type": "Bearer",
+  "user": {
+    "id": 1,
+    "name": "Admin",
+    "email": "admin@example.com",
+    "is_superadmin": true,
+    "tenants": []
+  }
+}
+```
+
+---
+
+### Superadmin Endpoints
+
+> Semua endpoint ini memerlukan autentikasi (`Authorization: Bearer {token}`).
+> Tidak ada middleware role khusus saat ini — pastikan hanya superadmin yang bisa mengaksesnya dari sisi frontend/client.
+
+| Method | Endpoint | Deskripsi |
+|---|---|---|
+| `GET` | `/superadmin/tenants` | List semua tenant |
+| `POST` | `/superadmin/tenants` | Buat tenant baru |
+| `GET` | `/superadmin/users` | List semua user (beserta tenant terkait) |
+| `POST` | `/superadmin/users` | Buat user baru dan assign ke tenant |
+| `DELETE` | `/superadmin/users/{id}` | Hapus user dan detach dari semua tenant |
+
+**POST `/superadmin/tenants`:**
+```json
+{
+  "name": "Nama Perusahaan",
+  "domain": "nama-domain"
+}
+```
+
+**POST `/superadmin/users`:**
+```json
+{
+  "name": "John Doe",
+  "email": "john@example.com",
+  "password": "rahasia123",
+  "tenant_id": 1,
+  "role": "admin"
+}
+```
+> `password` opsional — default ke `password123` jika kosong.
+> `role` opsional — default ke `admin`.
+
+---
+
+### Tenant Endpoints
+
+> Memerlukan autentikasi + header `X-Tenant-Domain`.
+
+| Method | Endpoint | Deskripsi |
+|---|---|---|
+| `GET` | `/tenant/users` | List user dalam tenant aktif |
+| `POST` | `/tenant/users` | Invite/tambah user ke tenant |
+
+**POST `/tenant/users`:**
+```json
+{
+  "name": "Jane Smith",
+  "email": "jane@company.com"
+}
+```
+> Jika email sudah ada, user yang ada akan di-attach ke tenant. Jika belum, user baru dibuat dengan password default `password123` dan role `staff`.
+
+---
+
+### Endpoint Publik
+
+| Method | Endpoint | Deskripsi |
+|---|---|---|
+| `GET` | `/products` | List produk (tanpa auth, tanpa tenant scope) |
+
+---
+
+## Cara Integrasi dari Frontend Lain
+
+### 1. Autentikasi
+
+Kirim request login, simpan `access_token` yang dikembalikan, lalu sertakan di setiap request berikutnya:
+
+```
+Authorization: Bearer {access_token}
+```
+
+### 2. Akses Endpoint Tenant
+
+Untuk endpoint di bawah `/api/tenant/*`, wajib menyertakan header tambahan:
+
+```
+X-Tenant-Domain: nama-domain-tenant
+```
+
+Domain tenant bisa didapat dari data `user.tenants[].domain` setelah login.
+
+### 3. Contoh Request (JavaScript/Fetch)
+
+```js
+// Login
+const res = await fetch('http://localhost:8000/api/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ email: 'user@example.com', password: 'password' })
+})
+const { access_token, user } = await res.json()
+
+// Akses tenant endpoint
+const users = await fetch('http://localhost:8000/api/tenant/users', {
+  headers: {
+    'Authorization': `Bearer ${access_token}`,
+    'X-Tenant-Domain': user.tenants[0].domain
+  }
+})
+```
+
+### 4. Contoh Request (Axios)
+
+```js
+import axios from 'axios'
+
+const api = axios.create({ baseURL: 'http://localhost:8000/api' })
+
+// Interceptor untuk inject token dan tenant domain
+api.interceptors.request.use(config => {
+  const token = localStorage.getItem('auth_token')
+  const tenantDomain = localStorage.getItem('tenant_domain')
+
+  if (token) config.headers['Authorization'] = `Bearer ${token}`
+  if (tenantDomain) config.headers['X-Tenant-Domain'] = tenantDomain
+
+  return config
+})
+```
+
+---
+
+## Roles
+
+| Role | Deskripsi |
+|---|---|
+| `is_superadmin = true` | Akses global ke semua tenant dan user |
+| `admin` | Role default saat user di-assign ke tenant via superadmin |
+| `staff` | Role default saat user di-invite via tenant endpoint |
+
+Role disimpan di tabel pivot `tenant_user.role`. Saat ini belum ada middleware role enforcement di backend — validasi role dilakukan di sisi frontend atau bisa ditambahkan sesuai kebutuhan.
+
+---
+
+## CORS
+
+CORS dikonfigurasi di `config/cors.php`. Untuk development, pastikan origin frontend sudah diizinkan. Ubah `allowed_origins` sesuai URL frontend kamu.
+
+---
+
+## Catatan untuk Production
+
+- Ganti SQLite ke MySQL/PostgreSQL di `.env`
+- Set `APP_ENV=production` dan `APP_DEBUG=false`
+- Tambahkan rate limiting pada endpoint auth
+- Implementasikan email verification untuk user yang di-invite
+- Pertimbangkan subdomain routing untuk isolasi tenant yang lebih kuat
